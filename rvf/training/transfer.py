@@ -49,8 +49,14 @@ def pretrain_source(source_pool: pd.DataFrame, *, grid: GridConfig,
 def finetune_target(windows: pd.DataFrame, ticker: str, fraction: float, *,
                     pretrained: PretrainResult, grid: GridConfig, seed: int = 0,
                     output_only: bool = False) -> tuple[FitResult, Dataset]:
-    """Fine-tune the pretrained model on a target subset. Returns (fit, dataset)."""
-    ds = make_target_dataset(windows, ticker, fraction)
+    """Fine-tune the pretrained model on a target subset. Returns (fit, dataset).
+
+    For output-layer-only adaptation the body is frozen, so target features must
+    stay on the source scaler (the space the body was trained in); we reuse the
+    pretrained scaler. For full fine-tuning the body adapts, so we refit the
+    scaler on the target subset (standard transfer practice)."""
+    ds = make_target_dataset(windows, ticker, fraction,
+                             fixed_scaler=pretrained.scaler if output_only else None)
     fit = select_and_train(ds.X_train, ds.y_train, ds.X_val, ds.y_val,
                            grid=grid, seed=seed,
                            init_state=pretrained.state_dict,

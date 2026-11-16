@@ -44,22 +44,28 @@ def _xy(df: pd.DataFrame, scaler: Standardizer) -> tuple[np.ndarray, np.ndarray]
     return X, y
 
 
-def make_target_dataset(windows: pd.DataFrame, ticker: str, fraction: float
-                        ) -> Dataset:
+def make_target_dataset(windows: pd.DataFrame, ticker: str, fraction: float,
+                        fixed_scaler: Standardizer | None = None) -> Dataset:
     """Target-only dataset at a given training fraction.
 
-    Scaler is fit on the target stock's permitted train subset only. val/test are
-    that stock's full val/test windows (fixed across fractions, per 3.3).
+    By default the scaler is fit on the target stock's permitted train subset
+    only (val/test are that stock's full fixed splits, per 3.3). Pass
+    `fixed_scaler` to reuse an externally-fitted scaler instead of refitting --
+    used for output-layer-only fine-tuning, where the frozen (source-trained)
+    body must keep receiving inputs on the SOURCE scale it was trained on.
     """
     tgt = windows[windows["ticker"] == ticker]
     train = target_train_at_fraction(windows, ticker, fraction)
     val = tgt[tgt["split"] == "val"]
     test = tgt[tgt["split"] == "test"]
 
-    scaler = Standardizer()
-    if len(train) > 0:
+    if fixed_scaler is not None:
+        scaler = fixed_scaler
+    elif len(train) > 0:
+        scaler = Standardizer()
         scaler.fit(train)
     else:
+        scaler = Standardizer()
         # fraction == 0.0 (zero-shot): no target rows are permitted, so we must
         # NOT fit on val/test (that would touch evaluation data). Use an identity
         # scaler; this Dataset's X is never used to train a model at fraction 0.

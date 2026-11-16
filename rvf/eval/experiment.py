@@ -125,6 +125,14 @@ def run_experiment(windows: pd.DataFrame, part: Partition, *,
     return results, summary
 
 
+# The data-efficiency threshold is defined over the TARGET-DATA fraction, so it
+# only applies to methods that actually vary with that fraction. The flat
+# baselines (persistence/linear/har) train on the full target split regardless of
+# fraction, so a "threshold fraction" for them is meaningless -- they are excluded
+# and shown only as reference lines in the plots.
+_FRACTION_DEPENDENT = ("scratch", "finetune_full", "finetune_head", "zeroshot")
+
+
 def _efficiency_summary(results: pd.DataFrame, fractions, tol: float
                         ) -> pd.DataFrame:
     rows = []
@@ -133,6 +141,8 @@ def _efficiency_summary(results: pd.DataFrame, fractions, tol: float
         ref = scratch[scratch["fraction"] == 1.0]["rmspe"]
         e_ref = float(ref.iloc[0]) if len(ref) else float("nan")
         for method, gm in g.groupby("method"):
+            if method not in _FRACTION_DEPENDENT:
+                continue
             f2e = {float(r.fraction): float(r.rmspe) for r in gm.itertuples()}
             thr = efficiency_threshold(f2e, e_ref, tol=tol)
             rows.append({"target": ticker, "method": method, "e_ref": e_ref,
