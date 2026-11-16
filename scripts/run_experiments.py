@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rvf.config import load_config
 from rvf.data.splits import Partition
-from rvf.eval.experiment import run_experiment
+from rvf.eval.experiment import _efficiency_summary, run_experiment
 from rvf.eval.plots import plot_rmspe_curves
 from rvf.training.trainer import GridConfig
 
@@ -46,7 +46,17 @@ def main() -> None:
                     help="path to windows.parquet (default: <processed_dir>/windows.parquet)")
     ap.add_argument("--quick", action="store_true",
                     help="1 seed + small grid for a fast plumbing check")
+    ap.add_argument("--fresh", action="store_true",
+                    help="delete any existing results and start over")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="process at most N not-yet-done targets this run "
+                         "(for chunking a long sweep; re-run to continue)")
+    ap.add_argument("--max-pretrain-samples", type=int, default=300000,
+                    help="cap source-pool training rows for pretraining (compute; "
+                         "a small MLP does not need the full ~1M+). 0 = no cap.")
     args = ap.parse_args()
+    if args.max_pretrain_samples == 0:
+        args.max_pretrain_samples = None
 
     cfg = load_config(args.config)
     proc = args.processed or os.path.join(cfg.data.processed_dir, "windows.parquet")
@@ -64,18 +74,54 @@ def main() -> None:
     grid = (GridConfig(learning_rates=(1e-2,), max_epochs=40, patience=8)
             if args.quick else GridConfig())
 
-    print(f"Targets: {part.target_tickers}  | sources: {len(part.source_tickers)} "
-          f"| seeds: {seeds} | fractions: {cfg.fractions}")
-    results, summary = run_experiment(
-        windows, part, fractions=cfg.fractions, seeds=seeds, grid=grid,
-        tol=cfg.efficiency_tolerance)
+    results_path = os.path.join(cfg.results_dir, "experiment_results.csv")
+    # Resume: skip targets already in the results CSV (unless --fresh).
+    done: set[str] = set()
+    if args.fresh and os.path.exists(results_path):
+        os.remove(results_path)
+    if os.path.exists(results_path):
+        done = set(pd.read_csv(results_path)["target"].unique())
 
-    results.to_csv(os.path.join(cfg.results_dir, "experiment_results.csv"), index=False)
+    todo = [t for t in part.target_tickers if t not in done]
+    print(f"Targets: {len(part.target_tickers)} total, {len(done)} done, "
+          f"{len(todo)} to run | sources: {len(part.source_tickers)} "
+          f"| seeds: {seeds} | fractions: {cfg.fractions}")
+    if args.limit:
+        todo = todo[: args.limit]
+        print(f"  (this run limited to {len(todo)} targets)")
+
+    if todo:
+        import pickle
+        from rvf.eval.experiment import pretrain_all_seeds, run_one_target
+        cache = os.path.join(cfg.results_dir, "pretrained.pkl")
+        if os.path.exists(cache) and not args.fresh:
+            print("  loading cached pretrained source models...")
+            with open(cache, "rb") as fh:
+                pretrained = pickle.load(fh)
+        else:
+            print("  pretraining source models (cached for later chunks)...")
+            pretrained = pretrain_all_seeds(windows, part, seeds=seeds, grid=grid,
+                                            max_samples=args.max_pretrain_samples)
+            with open(cache, "wb") as fh:
+                pickle.dump(pretrained, fh)
+        header_needed = not os.path.exists(results_path)
+        for i, ticker in enumerate(todo, 1):
+            rows = run_one_target(windows, ticker, pretrained,
+                                  fractions=cfg.fractions, seeds=seeds, grid=grid)
+            pd.DataFrame(rows).to_csv(results_path, mode="a", index=False,
+                                      header=header_needed)
+            header_needed = False
+            print(f"  [{i}/{len(todo)}] {ticker} done")
+
+    # Recompute summary + plots over everything accumulated so far.
+    results = pd.read_csv(results_path)
+    summary = _efficiency_summary(results, cfg.fractions, cfg.efficiency_tolerance)
     summary.to_csv(os.path.join(cfg.results_dir, "efficiency_summary.csv"), index=False)
     plots = plot_rmspe_curves(results, cfg.results_dir)
 
-    print("\n=== Efficiency summary (smallest fraction within "
-          f"{cfg.efficiency_tolerance}x of scratch@100%) ===")
+    n_targets = results["target"].nunique()
+    print(f"\n=== Efficiency summary over {n_targets} targets (smallest fraction "
+          f"within {cfg.efficiency_tolerance}x of scratch@100%) ===")
     print(summary.to_string(index=False))
     print(f"\nWrote experiment_results.csv, efficiency_summary.csv, "
           f"and {len(plots)} plot(s) to {cfg.results_dir}/")

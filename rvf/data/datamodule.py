@@ -73,16 +73,25 @@ def make_target_dataset(windows: pd.DataFrame, ticker: str, fraction: float
     return Dataset(Xtr, ytr, Xva, yva, Xte, yte, scaler, n_train=len(train))
 
 
-def make_source_dataset(source_pool: pd.DataFrame) -> Dataset:
-    """Pretraining dataset: all source-pool windows (already cut at val_start).
+def make_source_dataset(source_pool: pd.DataFrame,
+                        max_samples: int | None = None,
+                        seed: int = 0) -> Dataset:
+    """Pretraining dataset: source-pool windows (already cut at val_start).
 
     Scaler is fit on the source pool. A small val split is carved chronologically
     from the pool tail for early stopping; there is no test here (targets own it).
+
+    `max_samples` optionally subsamples the TRAIN portion for compute (a small MLP
+    does not need ~1M rows). The subsample is random but seeded for reproducibility;
+    the chronological val tail is kept intact so early stopping is unaffected.
     """
     pool = source_pool.sort_values("decision_time")
     n = len(pool)
     cut = int(n * 0.9)
     train, val = pool.iloc[:cut], pool.iloc[cut:]
+    if max_samples is not None and len(train) > max_samples:
+        train = train.sample(n=max_samples, random_state=seed).sort_values(
+            "decision_time")
     scaler = Standardizer().fit(train)
     Xtr, ytr = _xy(train, scaler)
     Xva, yva = _xy(val, scaler)

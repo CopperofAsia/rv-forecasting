@@ -54,57 +54,71 @@ def run_baselines(windows: pd.DataFrame, ticker: str) -> dict[str, float]:
     return out
 
 
+def run_one_target(windows: pd.DataFrame, ticker: str, pretrained: dict, *,
+                   fractions, seeds, grid: GridConfig) -> list[dict]:
+    """All method results for a single target stock. Pretrained models (one per
+    seed) are passed in so the expensive source pretraining is shared across
+    targets rather than repeated."""
+    rows = []
+    base = run_baselines(windows, ticker)
+    for name, val in base.items():
+        for f in fractions:
+            rows.append({"target": ticker, "method": name,
+                         "fraction": f, "rmspe": val})
+
+    def zs(s):
+        y, p = zero_shot(windows, ticker, pretrained=pretrained[s], grid=grid)
+        return rmspe(y, p).rmspe
+    rows.append({"target": ticker, "method": "zeroshot",
+                 "fraction": 0.0, "rmspe": _mean_rmspe_over_seeds(zs, seeds)})
+
+    for f in fractions:
+        if f == 0.0:
+            continue  # scratch/finetune undefined with 0 target rows
+
+        def scratch(s):
+            ds = make_target_dataset(windows, ticker, f)
+            if ds.n_train == 0:
+                return float("nan")
+            fit = select_and_train(ds.X_train, ds.y_train, ds.X_val,
+                                   ds.y_val, grid=grid, seed=s)
+            return rmspe(ds.y_test, predict(fit.model, ds.X_test)).rmspe
+
+        def ft(s, output_only):
+            fit, ds = finetune_target(windows, ticker, f,
+                                      pretrained=pretrained[s], grid=grid,
+                                      seed=s, output_only=output_only)
+            if ds.n_train == 0:
+                return float("nan")
+            return rmspe(ds.y_test, predict(fit.model, ds.X_test)).rmspe
+
+        rows.append({"target": ticker, "method": "scratch", "fraction": f,
+                     "rmspe": _mean_rmspe_over_seeds(scratch, seeds)})
+        rows.append({"target": ticker, "method": "finetune_full", "fraction": f,
+                     "rmspe": _mean_rmspe_over_seeds(lambda s: ft(s, False), seeds)})
+        rows.append({"target": ticker, "method": "finetune_head", "fraction": f,
+                     "rmspe": _mean_rmspe_over_seeds(lambda s: ft(s, True), seeds)})
+    return rows
+
+
+def pretrain_all_seeds(windows: pd.DataFrame, part: Partition, *, seeds,
+                       grid: GridConfig, max_samples: int | None = None) -> dict:
+    """Pretrain one source model per seed (shared across all targets)."""
+    pool = source_pretrain_pool(windows, part)
+    return {s: pretrain_source(pool, grid=grid, seed=s, max_samples=max_samples)
+            for s in seeds}
+
+
 def run_experiment(windows: pd.DataFrame, part: Partition, *,
                    fractions, seeds=(0, 1, 2), grid: GridConfig | None = None,
                    tol: float = 1.05) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (long_results, efficiency_summary)."""
+    """Return (long_results, efficiency_summary) for all targets in one pass."""
     grid = grid or GridConfig()
-    pool = source_pretrain_pool(windows, part)
-    pretrained = {s: pretrain_source(pool, grid=grid, seed=s) for s in seeds}
-
+    pretrained = pretrain_all_seeds(windows, part, seeds=seeds, grid=grid)
     rows = []
     for ticker in part.target_tickers:
-        base = run_baselines(windows, ticker)
-        for name, val in base.items():
-            for f in fractions:
-                rows.append({"target": ticker, "method": name,
-                             "fraction": f, "rmspe": val})
-
-        # zero-shot (fraction 0.0 point)
-        def zs(s):
-            y, p = zero_shot(windows, ticker, pretrained=pretrained[s], grid=grid)
-            return rmspe(y, p).rmspe
-        rows.append({"target": ticker, "method": "zeroshot",
-                     "fraction": 0.0, "rmspe": _mean_rmspe_over_seeds(zs, seeds)})
-
-        for f in fractions:
-            if f == 0.0:
-                continue  # scratch/finetune undefined with 0 target rows
-
-            def scratch(s):
-                ds = make_target_dataset(windows, ticker, f)
-                if ds.n_train == 0:
-                    return float("nan")
-                fit = select_and_train(ds.X_train, ds.y_train, ds.X_val,
-                                       ds.y_val, grid=grid, seed=s)
-                return rmspe(ds.y_test, predict(fit.model, ds.X_test)).rmspe
-
-            def ft(s, output_only):
-                fit, ds = finetune_target(windows, ticker, f,
-                                          pretrained=pretrained[s], grid=grid,
-                                          seed=s, output_only=output_only)
-                if ds.n_train == 0:
-                    return float("nan")
-                return rmspe(ds.y_test, predict(fit.model, ds.X_test)).rmspe
-
-            rows.append({"target": ticker, "method": "scratch", "fraction": f,
-                         "rmspe": _mean_rmspe_over_seeds(scratch, seeds)})
-            rows.append({"target": ticker, "method": "finetune_full",
-                         "fraction": f,
-                         "rmspe": _mean_rmspe_over_seeds(lambda s: ft(s, False), seeds)})
-            rows.append({"target": ticker, "method": "finetune_head",
-                         "fraction": f,
-                         "rmspe": _mean_rmspe_over_seeds(lambda s: ft(s, True), seeds)})
+        rows.extend(run_one_target(windows, ticker, pretrained,
+                                   fractions=fractions, seeds=seeds, grid=grid))
 
     results = pd.DataFrame(rows)
     summary = _efficiency_summary(results, fractions, tol)

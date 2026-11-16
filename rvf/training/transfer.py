@@ -37,8 +37,9 @@ class PretrainResult:
 
 
 def pretrain_source(source_pool: pd.DataFrame, *, grid: GridConfig,
-                    seed: int = 0) -> PretrainResult:
-    ds = make_source_dataset(source_pool)
+                    seed: int = 0, max_samples: int | None = None
+                    ) -> PretrainResult:
+    ds = make_source_dataset(source_pool, max_samples=max_samples, seed=seed)
     fit = select_and_train(ds.X_train, ds.y_train, ds.X_val, ds.y_val,
                            grid=grid, seed=seed)
     return PretrainResult({k: v.clone() for k, v in fit.model.state_dict().items()},
