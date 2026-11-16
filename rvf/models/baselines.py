@@ -96,8 +96,14 @@ class HARBaseline:
         parts_X, parts_y = [], []
         for _, g in df.groupby("ticker"):
             Xg, yg = self._features(g)
+            if Xg.shape[0] == 0:
+                continue
             parts_X.append(Xg)
             parts_y.append(yg)
+        if not parts_X:
+            # No valid lagged rows anywhere -> degenerate fit (predict 0).
+            self.coef_ = np.zeros(4)
+            return self
         X = np.vstack(parts_X)
         y = np.concatenate(parts_y)
         A = np.hstack([np.ones((X.shape[0], 1)), X])
@@ -105,13 +111,22 @@ class HARBaseline:
         return self
 
     def predict_frame(self, df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-        """Predict for a frame; returns (y_true, y_pred) aligned on valid rows."""
+        """Predict for a frame; returns (y_true, y_pred) aligned on valid rows.
+
+        Returns empty arrays if no group yields a valid lagged row (e.g. a test
+        split shorter than the HAR warmup) -- the caller's RMSPE then reports NaN,
+        the correct 'not evaluable' outcome rather than a crash.
+        """
         if self.coef_ is None:
             raise RuntimeError("HARBaseline used before fit_frame().")
         preds, trues = [], []
         for _, g in df.groupby("ticker"):
             Xg, yg = self._features(g)
+            if Xg.shape[0] == 0:
+                continue
             A = np.hstack([np.ones((Xg.shape[0], 1)), Xg])
             preds.append(np.clip(A @ self.coef_, 0.0, None))
             trues.append(yg)
+        if not trues:
+            return np.empty((0,)), np.empty((0,))
         return np.concatenate(trues), np.concatenate(preds)

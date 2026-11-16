@@ -60,6 +60,26 @@ def test_label_rv_math_matches_formula():
     assert np.isclose(expected_sigma, np.sqrt(np.sum(np.diff(np.log(prices)) ** 2)))
 
 
+def test_windows_label_spans_fixed_clock_horizon_with_gaps():
+    """Even when minutes are missing, the label window must cover exactly H
+    wall-clock minutes after the decision time (not H observed bars)."""
+    cfg = Config()
+    H = cfg.data.window.horizon_minutes
+    df = _toy_session("2024-06-03", n=390)
+    # Drop a chunk of minutes in the middle to create a gap.
+    ts = pd.to_datetime(df["datetime"])
+    drop = (ts.dt.time >= pd.Timestamp("11:00").time()) & \
+           (ts.dt.time < pd.Timestamp("11:15").time())
+    df = df.loc[~drop].reset_index(drop=True)
+    win = build_windows(df, "G", cfg.data)
+    assert len(win) > 0
+    # For every window, the label covers (t, t+H]; the next decision time is a
+    # multiple of H minutes away, so no label can reach past its clock horizon.
+    dts = pd.to_datetime(win["decision_time"]).sort_values().reset_index(drop=True)
+    gaps = dts.diff().dropna().dt.total_seconds() / 60
+    assert (gaps % H == 0).all()
+
+
 def test_windows_no_lookahead_and_label_positive():
     cfg = Config()
     df = pd.concat([_toy_session("2024-02-01"), _toy_session("2024-02-02")],

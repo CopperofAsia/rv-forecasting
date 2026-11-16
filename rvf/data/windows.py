@@ -65,31 +65,43 @@ def build_windows(df: pd.DataFrame, ticker: str, data: DataConfig) -> pd.DataFra
 
     rows = []
     for session, part in df.groupby("_session"):
-        part = part.sort_values(s.datetime).reset_index(drop=True)
-        close = part[s.close].to_numpy(dtype=float)
-        high = part[s.high].to_numpy(dtype=float)
-        low = part[s.low].to_numpy(dtype=float)
-        vol = part[s.volume].to_numpy(dtype=float)
-        times = part[s.datetime].to_numpy()
-        n = len(part)
-        # Decision index i: features from (i-L, i], label from (i, i+H].
-        # Step by H so successive feature windows never overlap a prior label.
-        i = L
-        while i + H < n:
-            feat_close = close[i - L:i + 1]
-            lab_close = close[i:i + H + 1]        # includes P at t as P_0 of future
+        part = part.sort_values(s.datetime)
+        # Reindex onto a regular 1-minute CLOCK grid for the session. Missing
+        # minutes become NaN (never filled); this makes every window span exactly
+        # L / H wall-clock minutes regardless of how many bars actually traded.
+        grid = pd.date_range(part[s.datetime].iloc[0], part[s.datetime].iloc[-1],
+                             freq="1min")
+        if len(grid) < L + H + 1:
+            continue
+        g = part.set_index(s.datetime).reindex(grid)
+        close = g[s.close].to_numpy(dtype=float)
+        high = g[s.high].to_numpy(dtype=float)
+        low = g[s.low].to_numpy(dtype=float)
+        vol = g[s.volume].to_numpy(dtype=float)
+        n = len(grid)
+        # Decision minute m: features cover clock minutes (m-L, m], label (m, m+H].
+        # Step by H minutes so successive feature windows never overlap a label.
+        m = L
+        while m + H < n:
+            if not np.isfinite(close[m]):
+                m += H  # no observed price at the decision minute itself
+                continue
+            # Label: consecutive observed minutes inside (m, m+H] only. A return
+            # across a gap has a NaN endpoint and is dropped by _safe_log_returns,
+            # so this enforces the proposal's "consecutive observed prices" rule.
+            lab_close = close[m:m + H + 1]
             lab_rets = _safe_log_returns(lab_close)
             if len(lab_rets) < w.min_valid_returns:
-                i += H
+                m += H
                 continue
-            rv30 = float(np.sum(lab_rets ** 2))
-            sigma30 = float(np.sqrt(rv30))
+            sigma30 = float(np.sqrt(np.sum(lab_rets ** 2)))
 
+            feat_close = close[m - L:m + 1]
             feat_rets = _safe_log_returns(feat_close)
             rv_lb = float(np.sqrt(np.sum(feat_rets ** 2))) if len(feat_rets) else 0.0
-            hl = (high[i - L:i + 1] - low[i - L:i + 1]) / np.where(
+            hl = (high[m - L:m + 1] - low[m - L:m + 1]) / np.where(
                 feat_close != 0, feat_close, np.nan)
-            dec_ts = pd.Timestamp(times[i])
+            dec_ts = pd.Timestamp(grid[m])
             minute_of_day = (dec_ts.hour * 60 + dec_ts.minute - 9 * 60 - 30) / 390.0
 
             rows.append({
@@ -100,13 +112,13 @@ def build_windows(df: pd.DataFrame, ticker: str, data: DataConfig) -> pd.DataFra
                 "ret_mean": float(np.mean(feat_rets)) if len(feat_rets) else 0.0,
                 "ret_std": float(np.std(feat_rets)) if len(feat_rets) else 0.0,
                 "ret_last": float(feat_rets[-1]) if len(feat_rets) else 0.0,
-                "log_volume": float(np.log1p(np.nansum(vol[i - L:i + 1]))),
+                "log_volume": float(np.log1p(np.nansum(vol[m - L:m + 1]))),
                 "hl_range": float(np.nanmean(hl)) if np.isfinite(hl).any() else 0.0,
                 "observed_frac": len(feat_rets) / L,
                 "minute_of_day": float(np.clip(minute_of_day, 0.0, 1.0)),
                 "label_sigma30": sigma30,
             })
-            i += H
+            m += H
     return pd.DataFrame(rows)
 
 
@@ -121,12 +133,16 @@ def window_discard_report(df: pd.DataFrame, ticker: str, data: DataConfig,
     w = data.window
     H, L = w.horizon_minutes, w.feature_lookback_minutes
     df = df.copy()
+    df[s.datetime] = pd.to_datetime(df[s.datetime])
     df["_session"] = _session_key(df[s.datetime])
     candidates = 0
+    # Candidate decision minutes are counted on the same regular clock grid the
+    # builder uses, so discard_rate reflects gaps within the session span.
     for _, part in df.groupby("_session"):
-        n = len(part)
-        if n > L + H:
-            candidates += len(range(L, n - H, H))
+        t = part[s.datetime]
+        n_grid = int((t.max() - t.min()).total_seconds() // 60) + 1
+        if n_grid > L + H:
+            candidates += len(range(L, n_grid - H, H))
     if built is None:
         built = len(build_windows(df, ticker, data))
     return {
