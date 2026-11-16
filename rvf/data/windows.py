@@ -94,7 +94,7 @@ def build_windows(df: pd.DataFrame, ticker: str, data: DataConfig) -> pd.DataFra
 
             rows.append({
                 "ticker": ticker,
-                "session": session,
+                "session": str(session),   # ISO string; serializes in any engine
                 "decision_time": dec_ts,
                 "rv_lookback": rv_lb,
                 "ret_mean": float(np.mean(feat_rets)) if len(feat_rets) else 0.0,
@@ -110,8 +110,13 @@ def build_windows(df: pd.DataFrame, ticker: str, data: DataConfig) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
-def window_discard_report(df: pd.DataFrame, ticker: str, data: DataConfig) -> dict:
-    """Diagnostics on how many candidate windows survived the validity rule."""
+def window_discard_report(df: pd.DataFrame, ticker: str, data: DataConfig,
+                           built: int | None = None) -> dict:
+    """Diagnostics on how many candidate windows survived the validity rule.
+
+    Pass `built` (the length of an already-constructed window frame) to avoid
+    rebuilding the windows a second time -- the caller usually has them already.
+    """
     s = data.schema
     w = data.window
     H, L = w.horizon_minutes, w.feature_lookback_minutes
@@ -122,7 +127,8 @@ def window_discard_report(df: pd.DataFrame, ticker: str, data: DataConfig) -> di
         n = len(part)
         if n > L + H:
             candidates += len(range(L, n - H, H))
-    built = len(build_windows(df, ticker, data))
+    if built is None:
+        built = len(build_windows(df, ticker, data))
     return {
         "ticker": ticker,
         "candidate_windows": candidates,

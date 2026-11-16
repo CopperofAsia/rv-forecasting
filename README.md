@@ -10,11 +10,13 @@ See `docs/DDA4220_Project_Proposal.pdf` for the full design and
 
 ## Status
 
-Implemented so far: **Phase 0 (scaffold/config)** and **Phase 1 (data layer)** —
-loading, liquidity audit, window/label construction, chronological splits with a
-disjoint source/target partition and shared leakage cutoff, feature scaling, and
-nested target-data fractions. Models, training, and evaluation (Phases 2–5) are
-next.
+Implemented: **Phases 0–6**. The data layer (loading, liquidity audit,
+window/label construction, chronological splits with a disjoint source/target
+partition and shared leakage cutoff, feature scaling, nested fractions), the
+baselines (persistence, linear, HAR), the target-only MLP, source pretraining +
+fine-tuning (full and output-layer-only), the RMSPE / data-efficiency metrics,
+and the experiment orchestrator with RMSPE-vs-fraction plots. Tuning the
+liquidity thresholds on the real audit and writing up results remain.
 
 ## Layout
 
@@ -26,12 +28,27 @@ rvf/
     loader.py          load 1-min bars; per-stock liquidity audit + screening
     windows.py         feature windows + RV30 -> sigma30 labels (no look-ahead)
     splits.py          source/target partition, shared cutoff, scaler, fractions
+    datamodule.py      assemble (X,y) arrays per stage; scaler fit on permitted rows
+  models/
+    baselines.py       persistence, linear regression, HAR-style
+    mlp.py             small MLP, softplus nonnegative output
+  training/
+    trainer.py         Adam + prespecified LR/epoch grid, early stop, multi-seed
+    transfer.py        source pretrain, fine-tune (full/head), zero-shot 0% point
+  eval/
+    metrics.py         RMSPE (+zero-label handling), D_m(f), efficiency threshold
+    experiment.py      methods x fractions x targets x seeds comparison
+    plots.py           RMSPE-vs-fraction curves
   utils/seeding.py     reproducible seeding
 configs/example.yaml   per-run overrides (set the data snapshot here)
 scripts/
+  download_data.py        batch-download bars from the HF Data Library API
   make_synthetic_data.py  synthetic fixture to test without the real download
   build_dataset.py        Phase-1 driver: raw bars -> processed windows + reports
-tests/test_data_layer.py  leakage / label / fraction checks
+  run_experiments.py      Phase 2-6 driver: comparison -> results + plots
+tests/
+  test_data_layer.py      leakage / label / fraction checks
+  test_models_eval.py     metrics / baselines / training smoke test
 ```
 
 ## Quick start (synthetic, no download needed)
@@ -46,6 +63,22 @@ python -I scripts/build_dataset.py --config configs/example.yaml --out-format cs
 With the real IEX data, download per `docs/DATA.md`, set
 `data.snapshot.download_date` in the config, use `file_glob: "*.parquet"`, and
 drop `--out-format csv`.
+
+## Full run (real data)
+
+```bash
+# 1. download (see docs/DATA.md) -> data/raw/*.parquet
+# 2. build the dataset (~2-3 min for ~200 tickers)
+python -I scripts/build_dataset.py --config configs/example.yaml
+# 3. inspect results/liquidity_audit.csv and results/discard_report.csv,
+#    then FIX the liquidity thresholds in configs/example.yaml and rebuild.
+# 4. quick plumbing check, then the full sweep:
+python -I scripts/run_experiments.py --config configs/example.yaml --quick
+python -I scripts/run_experiments.py --config configs/example.yaml
+```
+
+Outputs: `results/experiment_results.csv`, `results/efficiency_summary.csv`,
+and `results/rmspe_curve_<TICKER>.png`.
 
 ## Leakage controls (why the data layer is built this way)
 

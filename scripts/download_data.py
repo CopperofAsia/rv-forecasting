@@ -42,27 +42,55 @@ def list_universe() -> list[str]:
     return [s["ticker"] for s in r.json()["symbols"]]
 
 
-def download_one(ticker: str, out_dir: str, version: str, key: str) -> str:
+def _fetch_to_file(ticker: str, path: str, version: str, key: str) -> None:
+    """One streamed download attempt. Writes to a .part file and verifies the
+    byte count against Content-Length before promoting it, so a connection that
+    drops mid-stream can never leave a truncated .parquet in place."""
+    tmp = path + ".part"
+    with requests.get(f"{BASE}/bars/{ticker}", params={"version": version},
+                      headers={"X-API-Key": key}, timeout=120, stream=True) as r:
+        if r.status_code == 403:
+            raise SystemExit("403 Forbidden: verify your email and complete your "
+                             "profile (institution, country, role) on the website.")
+        if r.status_code == 401:
+            raise SystemExit("401 Unauthorized: HFDL_API_KEY missing/invalid/"
+                             "expired (keys expire every 30 days -- regenerate).")
+        if r.status_code == 429:
+            time.sleep(float(r.headers.get("Retry-After", "5")))
+            raise ConnectionError("rate limited")  # treated as retryable below
+        r.raise_for_status()
+        expected = int(r.headers.get("Content-Length", "0"))
+        written = 0
+        with open(tmp, "wb") as fh:
+            for chunk in r.iter_content(chunk_size=65536):
+                fh.write(chunk)
+                written += len(chunk)
+    if expected and written < expected:
+        os.remove(tmp)
+        raise ConnectionError(f"incomplete: {written}/{expected} bytes")
+    os.replace(tmp, path)
+
+
+def download_one(ticker: str, out_dir: str, version: str, key: str,
+                 max_retries: int = 4) -> str:
     path = os.path.join(out_dir, f"{ticker}.parquet")
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return "skip"
-    r = requests.get(f"{BASE}/bars/{ticker}", params={"version": version},
-                     headers={"X-API-Key": key}, timeout=120)
-    if r.status_code == 403:
-        raise SystemExit("403 Forbidden: verify your email and complete your "
-                         "profile (institution, country, role) on the website.")
-    if r.status_code == 401:
-        raise SystemExit("401 Unauthorized: HFDL_API_KEY missing/invalid/expired "
-                         "(keys expire every 30 days -- regenerate on the site).")
-    if r.status_code == 429:
-        time.sleep(float(r.headers.get("Retry-After", "5")))
-        return download_one(ticker, out_dir, version, key)
-    r.raise_for_status()
-    tmp = path + ".part"
-    with open(tmp, "wb") as fh:
-        fh.write(r.content)
-    os.replace(tmp, path)
-    return "ok"
+    last = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            _fetch_to_file(ticker, path, version, key)
+            return "ok"
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                ConnectionError) as e:
+            last = e
+            wait = min(2 ** attempt, 30)  # 2,4,8,16s backoff
+            print(f"    {ticker}: network error ({type(e).__name__}), "
+                  f"retry {attempt}/{max_retries} in {wait}s")
+            time.sleep(wait)
+    raise SystemExit(f"{ticker}: failed after {max_retries} retries ({last})")
 
 
 def main() -> None:

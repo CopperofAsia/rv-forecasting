@@ -9,13 +9,16 @@ data:
   raw_dir: data/raw
   file_glob: "*.parquet"        # use "*.csv" for the synthetic test fixture
   snapshot:
-    download_date: "UNSET"      # e.g. "2026-11-16" -- set before a real run
+    download_date: "2026-11-16"  # team snapshot (200 tickers fetched this date)
     cleaning_version: clean      # "clean" (primary) or "raw" (robustness)
-  liquidity:                    # placeholders -- FIX after the exploratory audit
-    max_gap_rate: 0.20
-    min_observed_bars: 300
-    min_valid_days: 60
-    min_dollar_volume: 1.0e6
+  liquidity:                    # FIXED from the exploratory audit (200-ticker
+                                # snapshot, 2026-11-16). See results/liquidity_audit.csv.
+    max_gap_rate: 0.30          # median median-gap-rate ~0.20; 0.30 keeps liquid names
+    min_observed_bars: 200      # of ~390; pairs with the gap-rate cap
+    min_valid_days: 250         # ~1150 trading days available; cleanly drops the
+                                # illiquid tail (bottom decile has <=3 good days)
+    min_dollar_volume: 1000000.0  # ~$1M/day floor (drops bottom ~20% by $-volume).
+                                # plain float, NOT 1.0e6 (YAML parses that as a string)
   window:
     horizon_minutes: 30
     feature_lookback_minutes: 30

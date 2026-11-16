@@ -95,14 +95,26 @@ def screen_tickers(audits: dict[str, pd.DataFrame], data: DataConfig
     per-day gap/observed/dollar-volume thresholds.
     """
     lq = data.liquidity
+    # Defensive float coercion: YAML parses "1.0e6" as a string, which would make
+    # the threshold comparisons raise. Fail loudly with a clear message instead.
+    try:
+        max_gap = float(lq.max_gap_rate)
+        min_obs = float(lq.min_observed_bars)
+        min_dvol = float(lq.min_dollar_volume)
+        min_days = int(lq.min_valid_days)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            "Liquidity thresholds must be numeric. A common cause is writing "
+            "'1.0e6' in YAML (parsed as a string); use 1000000.0 instead."
+        ) from e
     summary_rows = []
     eligible = []
     for ticker, aud in audits.items():
-        good = aud[(aud["gap_rate"] <= lq.max_gap_rate)
-                   & (aud["observed_bars"] >= lq.min_observed_bars)
-                   & (aud["dollar_volume"] >= lq.min_dollar_volume)]
+        good = aud[(aud["gap_rate"] <= max_gap)
+                   & (aud["observed_bars"] >= min_obs)
+                   & (aud["dollar_volume"] >= min_dvol)]
         n_good = len(good)
-        passed = n_good >= lq.min_valid_days
+        passed = n_good >= min_days
         summary_rows.append({
             "ticker": ticker,
             "n_days": len(aud),

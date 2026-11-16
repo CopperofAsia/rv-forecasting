@@ -44,11 +44,14 @@ def main() -> None:
     print(f"Found {len(tickers)} tickers in {cfg.data.raw_dir}")
 
     audits, windows, discards = {}, [], []
-    for tk, path in tickers.items():
+    for i, (tk, path) in enumerate(tickers.items(), 1):
         df = load_ticker(path, cfg.data)
         audits[tk] = audit_ticker(df, tk, cfg.data)
-        windows.append(build_windows(df, tk, cfg.data))
-        discards.append(window_discard_report(df, tk, cfg.data))
+        w = build_windows(df, tk, cfg.data)          # build once...
+        windows.append(w)
+        discards.append(window_discard_report(df, tk, cfg.data, built=len(w)))
+        if i % 25 == 0:
+            print(f"  processed {i}/{len(tickers)} tickers")
 
     all_windows = pd.concat(windows, ignore_index=True)
     eligible, summary = screen_tickers(audits, cfg.data)

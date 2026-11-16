@@ -6,7 +6,8 @@
 numpy>=1.26
 pandas>=2.0
 pyyaml>=6.0
-pyarrow>=14.0        # parquet I/O; use CSV if you prefer to skip it
-matplotlib>=3.8      # evaluation plots (later phases)
+pyarrow>=14.0        # parquet I/O; fastparquet is an alternative
+fastparquet>=2024.2 # fallback parquet engine (used in the current environment)
+matplotlib>=3.8      # evaluation plots
 torch>=2.1           # neural models (Phase 3+); CPU build is fine
 # pytest>=7.0        # optional: tests also run via `python -I tests/test_data_layer.py`
