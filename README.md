@@ -80,6 +80,27 @@ python -I scripts/run_experiments.py --config configs/example.yaml
 Outputs: `results/experiment_results.csv`, `results/efficiency_summary.csv`,
 and `results/rmspe_curve_<TICKER>.png`.
 
+### Report artifacts & secondary analyses
+
+```bash
+# aggregate tables + plots for the write-up (fast); add --source-count for the
+# source-stock-count study (slower):
+python -I scripts/run_analysis.py --config configs/example.yaml --source-count
+```
+
+### Raw-vs-Clean robustness (optional)
+
+Download the SAME tickers with `--version raw` into `data/raw_version/`, then
+build reusing the Clean partition so the comparison is apples-to-apples:
+
+```bash
+python -I scripts/download_data.py --top 200 --version raw --out data/raw_version
+python -I scripts/build_dataset.py  --config configs/raw_version.yaml \
+    --reuse-partition results/partition.json
+python -I scripts/run_experiments.py --config configs/raw_version.yaml
+python -I scripts/compare_versions.py     # writes results/report/clean_vs_raw.*
+```
+
 ## Leakage controls (why the data layer is built this way)
 
 - Features at decision time *t* use only bars at/before *t*; the label uses only

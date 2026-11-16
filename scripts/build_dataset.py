@@ -31,6 +31,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None)
     ap.add_argument("--out-format", choices=["parquet", "csv"], default="parquet")
+    ap.add_argument("--reuse-partition", default=None,
+                    help="path to an existing partition.json whose source/target "
+                         "assignment + cutoffs to reuse (for apples-to-apples "
+                         "robustness runs, e.g. Raw vs Clean)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -65,7 +69,29 @@ def main() -> None:
                          "Loosen LiquidityConfig thresholds or add data.")
 
     eligible_windows = all_windows[all_windows["ticker"].isin(eligible)].copy()
-    part = partition_stocks(eligible, cfg, eligible_windows)
+    if args.reuse_partition:
+        # Robustness runs (e.g. Raw vs Clean) must use the SAME source/target
+        # assignment and cutoffs as the reference run, or the comparison is not
+        # apples-to-apples. Load them from an existing partition.json. Any stock
+        # not eligible in this version is dropped from its set (reported).
+        import json as _json
+        from rvf.data.splits import Partition
+        with open(args.reuse_partition) as fh:
+            ref = _json.load(fh)
+        elig = set(eligible)
+        src = tuple(t for t in ref["source_tickers"] if t in elig)
+        tgt = tuple(t for t in ref["target_tickers"] if t in elig)
+        dropped = (set(ref["source_tickers"]) | set(ref["target_tickers"])) - elig
+        part = Partition(src, tgt, pd.Timestamp(ref["val_start"]),
+                         pd.Timestamp(ref["test_start"]))
+        print(f"Reusing partition from {args.reuse_partition}: "
+              f"{len(src)} source, {len(tgt)} target"
+              + (f" ({len(dropped)} ref stocks not eligible here: "
+                 f"{sorted(dropped)})" if dropped else ""))
+        eligible_windows = eligible_windows[
+            eligible_windows["ticker"].isin(set(src) | set(tgt))].copy()
+    else:
+        part = partition_stocks(eligible, cfg, eligible_windows)
     tagged = assign_split(eligible_windows, part)
 
     out_path = os.path.join(cfg.data.processed_dir, f"windows.{args.out_format}")

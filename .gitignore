@@ -58,3 +58,7 @@ data/processed/*
 !data/processed/.gitkeep
 results/*
 !results/.gitkeep
+# Raw-cleaning-version robustness run (same rule: never commit data)
+data/raw_version/
+data/processed_raw/
+results_raw/
