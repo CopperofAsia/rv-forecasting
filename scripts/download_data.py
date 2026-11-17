@@ -35,11 +35,31 @@ BASE = "https://api.hfdatalibrary.com/v1"
 MIN_INTERVAL = 0.65  # seconds between downloads -> < 100/min with margin
 
 
-def list_universe() -> list[str]:
-    """Public endpoint, no key needed: every available ticker."""
-    r = requests.get(f"{BASE}/symbols", timeout=60)
-    r.raise_for_status()
-    return [s["ticker"] for s in r.json()["symbols"]]
+def list_universe(max_retries: int = 4) -> list[str]:
+    """Public endpoint, no key needed: every available ticker. Retries on the
+    flaky-network errors (this call is otherwise a single point of failure)."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(f"{BASE}/symbols", timeout=120)
+            r.raise_for_status()
+            return [s["ticker"] for s in r.json()["symbols"]]
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError) as e:
+            wait = min(2 ** attempt, 30)
+            print(f"  /symbols network error ({type(e).__name__}), "
+                  f"retry {attempt}/{max_retries} in {wait}s")
+            time.sleep(wait)
+    raise SystemExit("Could not reach /symbols after retries. Your connection to "
+                     "api.hfdatalibrary.com is unstable -- try --tickers-from "
+                     "data/raw/_manifest.json to reuse the Clean ticker list.")
+
+
+def tickers_from_manifest(path: str) -> list[str]:
+    """Reuse the exact ticker list from an existing download manifest (e.g. the
+    Clean run's). Avoids the /symbols call and guarantees the same stock set."""
+    with open(path) as fh:
+        return list(json.load(fh)["tickers"])
 
 
 def _fetch_to_file(ticker: str, path: str, version: str, key: str) -> None:
@@ -98,6 +118,10 @@ def main() -> None:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--tickers", nargs="+", help="explicit ticker symbols")
     g.add_argument("--top", type=int, help="first N tickers of the universe")
+    g.add_argument("--tickers-from", default=None,
+                   help="reuse the ticker list from an existing manifest JSON "
+                        "(e.g. data/raw/_manifest.json) -- skips the /symbols call "
+                        "and guarantees the same stock set as that run")
     ap.add_argument("--version", choices=["clean", "raw"], default="clean")
     ap.add_argument("--out", default="data/raw")
     args = ap.parse_args()
@@ -107,7 +131,12 @@ def main() -> None:
         raise SystemExit("Set HFDL_API_KEY first:  export HFDL_API_KEY='...'")
 
     os.makedirs(args.out, exist_ok=True)
-    tickers = args.tickers or list_universe()[: args.top]
+    if args.tickers:
+        tickers = args.tickers
+    elif args.tickers_from:
+        tickers = tickers_from_manifest(args.tickers_from)
+    else:
+        tickers = list_universe()[: args.top]
     print(f"Downloading {len(tickers)} tickers (version={args.version}) -> {args.out}")
 
     counts = {"ok": 0, "skip": 0}
