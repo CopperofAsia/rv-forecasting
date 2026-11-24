@@ -1,0 +1,13 @@
+# Runtime dependencies for the RV-forecasting project.
+# Pinned loosely here; requirements-lock.txt holds the exact team snapshot.
+# Phase 1 (data layer) needs only numpy/pandas/pyyaml (+ pyarrow for parquet).
+# torch is used from Phase 3 onward (models/training).
+
+numpy>=1.26
+pandas>=2.0
+pyyaml>=6.0
+pyarrow>=14.0        # parquet I/O; fastparquet is an alternative
+fastparquet>=2024.2 # fallback parquet engine (used in the current environment)
+matplotlib>=3.8      # evaluation plots
+torch>=2.1           # neural models (Phase 3+); CPU build is fine
+# pytest>=7.0        # optional: tests also run via `python -I tests/test_data_layer.py`

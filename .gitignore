@@ -49,3 +49,16 @@ Desktop.ini
 
 # Logs
 *.log
+
+# Data — MUST NOT be committed (IEX terms; each member downloads their own).
+# Keep the directory structure but ignore the bars and derived artifacts.
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+results/*
+!results/.gitkeep
+# Raw-cleaning-version robustness run (same rule: never commit data)
+data/raw_version/
+data/processed_raw/
+results_raw/

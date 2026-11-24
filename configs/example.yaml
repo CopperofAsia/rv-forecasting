@@ -1,0 +1,37 @@
+# Example experiment config. Only keys here override the prespecified defaults
+# in rvf/config.py, so this file is a readable diff of what a run changed.
+#
+# IMPORTANT: fill in the snapshot block when you run on the real IEX data so the
+# result is reproducible (the library is corrected over time; pre-2026-10-06
+# downloads used a different dividend adjustment and must not be mixed).
+
+data:
+  raw_dir: data/raw
+  file_glob: "*.parquet"        # use "*.csv" for the synthetic test fixture
+  snapshot:
+    download_date: "2026-11-16"  # team snapshot (200 tickers fetched this date)
+    cleaning_version: clean      # "clean" (primary) or "raw" (robustness)
+  liquidity:                    # FIXED from the exploratory audit (200-ticker
+                                # snapshot, 2026-11-16). See results/liquidity_audit.csv.
+    max_gap_rate: 0.30          # median median-gap-rate ~0.20; 0.30 keeps liquid names
+    min_observed_bars: 200      # of ~390; pairs with the gap-rate cap
+    min_valid_days: 250         # ~1150 trading days available; cleanly drops the
+                                # illiquid tail (bottom decile has <=3 good days)
+    min_dollar_volume: 1000000.0  # ~$1M/day floor (drops bottom ~20% by $-volume).
+                                # plain float, NOT 1.0e6 (YAML parses that as a string)
+  window:
+    horizon_minutes: 30
+    feature_lookback_minutes: 30
+    min_valid_returns: 20
+  split:
+    target_stock_fraction: 0.20
+    train_frac: 0.60
+    val_frac: 0.20
+    test_frac: 0.20
+    seed: 0
+
+# Nested target-training fractions and the data-efficiency criterion are fixed
+# by the proposal; override only with a documented reason.
+fractions: [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 1.00]
+efficiency_tolerance: 1.05
+seeds: [0, 1, 2]

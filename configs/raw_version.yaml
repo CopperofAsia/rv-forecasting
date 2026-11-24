@@ -1,0 +1,43 @@
+# Robustness run on the RAW cleaning-version of the data (proposal 3.1).
+# Everything matches configs/example.yaml EXCEPT the data source + cleaning
+# version + output dirs, so the Clean and Raw runs never clobber each other.
+#
+# Download the SAME tickers as the Clean snapshot, but version=raw, into
+# data/raw_version/ :
+#     export HFDL_API_KEY="..."
+#     python -I scripts/download_data.py --top 200 --version raw --out data/raw_version
+#
+# Then:
+#     # reuse the Clean partition so the comparison is apples-to-apples:
+#     python -I scripts/build_dataset.py --config configs/raw_version.yaml \
+#         --reuse-partition results/partition.json
+#     python -I scripts/run_experiments.py --config configs/raw_version.yaml
+#     python -I scripts/compare_versions.py   # Clean vs Raw side-by-side
+
+data:
+  raw_dir: data/raw_version        # RAW-cleaning-version bars live here
+  processed_dir: data/processed_raw
+  file_glob: "*.parquet"
+  snapshot:
+    download_date: "2026-11-16"
+    cleaning_version: raw           # <-- the only substantive change vs example.yaml
+  liquidity:
+    max_gap_rate: 0.30
+    min_observed_bars: 200
+    min_valid_days: 250
+    min_dollar_volume: 1000000.0
+  window:
+    horizon_minutes: 30
+    feature_lookback_minutes: 30
+    min_valid_returns: 20
+  split:
+    target_stock_fraction: 0.20
+    train_frac: 0.60
+    val_frac: 0.20
+    test_frac: 0.20
+    seed: 0
+
+fractions: [0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 1.00]
+efficiency_tolerance: 1.05
+seeds: [0, 1, 2]
+results_dir: results_raw

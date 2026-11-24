@@ -1,0 +1,106 @@
+"""Assemble (X, y) arrays from processed windows for a given training stage.
+
+This is the bridge between the tidy window frame (data/processed/windows.parquet)
+and the models. It enforces the proposal's scaling rule: the Standardizer is fit
+ONLY on the rows permitted to the relevant training stage, then applied to val
+and test. Nothing is ever fit on evaluation data.
+
+A `Dataset` bundle carries the standardized feature matrices and raw sigma30
+labels for train/val/test, plus the fitted scaler so the same transform can be
+reused when fine-tuning from a pretrained model.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from .splits import Standardizer, target_train_at_fraction
+from .windows import FEATURE_NAMES
+
+
+@dataclass
+class Dataset:
+    X_train: np.ndarray
+    y_train: np.ndarray
+    X_val: np.ndarray
+    y_val: np.ndarray
+    X_test: np.ndarray
+    y_test: np.ndarray
+    scaler: Standardizer
+    n_train: int
+
+    @property
+    def n_features(self) -> int:
+        return len(FEATURE_NAMES)
+
+
+def _xy(df: pd.DataFrame, scaler: Standardizer) -> tuple[np.ndarray, np.ndarray]:
+    if len(df) == 0:
+        return (np.empty((0, len(FEATURE_NAMES))), np.empty((0,)))
+    X = scaler.transform(df)
+    y = df["label_sigma30"].to_numpy(dtype=float)
+    return X, y
+
+
+def make_target_dataset(windows: pd.DataFrame, ticker: str, fraction: float,
+                        fixed_scaler: Standardizer | None = None) -> Dataset:
+    """Target-only dataset at a given training fraction.
+
+    By default the scaler is fit on the target stock's permitted train subset
+    only (val/test are that stock's full fixed splits, per 3.3). Pass
+    `fixed_scaler` to reuse an externally-fitted scaler instead of refitting --
+    used for output-layer-only fine-tuning, where the frozen (source-trained)
+    body must keep receiving inputs on the SOURCE scale it was trained on.
+    """
+    tgt = windows[windows["ticker"] == ticker]
+    train = target_train_at_fraction(windows, ticker, fraction)
+    val = tgt[tgt["split"] == "val"]
+    test = tgt[tgt["split"] == "test"]
+
+    if fixed_scaler is not None:
+        scaler = fixed_scaler
+    elif len(train) > 0:
+        scaler = Standardizer()
+        scaler.fit(train)
+    else:
+        scaler = Standardizer()
+        # fraction == 0.0 (zero-shot): no target rows are permitted, so we must
+        # NOT fit on val/test (that would touch evaluation data). Use an identity
+        # scaler; this Dataset's X is never used to train a model at fraction 0.
+        n = len(FEATURE_NAMES)
+        scaler.mean_ = np.zeros(n)
+        scaler.std_ = np.ones(n)
+
+    Xtr, ytr = _xy(train, scaler)
+    Xva, yva = _xy(val, scaler)
+    Xte, yte = _xy(test, scaler)
+    return Dataset(Xtr, ytr, Xva, yva, Xte, yte, scaler, n_train=len(train))
+
+
+def make_source_dataset(source_pool: pd.DataFrame,
+                        max_samples: int | None = None,
+                        seed: int = 0) -> Dataset:
+    """Pretraining dataset: source-pool windows (already cut at val_start).
+
+    Scaler is fit on the source pool. A small val split is carved chronologically
+    from the pool tail for early stopping; there is no test here (targets own it).
+
+    `max_samples` optionally subsamples the TRAIN portion for compute (a small MLP
+    does not need ~1M rows). The subsample is random but seeded for reproducibility;
+    the chronological val tail is kept intact so early stopping is unaffected.
+    """
+    pool = source_pool.sort_values("decision_time")
+    n = len(pool)
+    cut = int(n * 0.9)
+    train, val = pool.iloc[:cut], pool.iloc[cut:]
+    if max_samples is not None and len(train) > max_samples:
+        train = train.sample(n=max_samples, random_state=seed).sort_values(
+            "decision_time")
+    scaler = Standardizer().fit(train)
+    Xtr, ytr = _xy(train, scaler)
+    Xva, yva = _xy(val, scaler)
+    empty = np.empty((0, len(FEATURE_NAMES)))
+    return Dataset(Xtr, ytr, Xva, yva, empty, np.empty((0,)), scaler,
+                   n_train=len(train))
